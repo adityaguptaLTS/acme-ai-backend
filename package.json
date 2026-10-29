@@ -1,0 +1,30 @@
+{
+  "name": "acme-ai-backend",
+  "version": "1.0.0",
+  "description": "Backend API for ACME AI Chat Application",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "dev": "nodemon src/server.js",
+    "test": "node test/api.test.js"
+  },
+  "keywords": [
+    "acme-ai",
+    "express",
+    "backend",
+    "chat-api"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "cors": "2.8.6",
+    "dotenv": "16.6.1",
+    "express": "4.22.3"
+  },
+  "devDependencies": {
+    "nodemon": "3.1.14"
+  },
+  "engines": {
+    "node": ">=16.20.2"
+  }
+}

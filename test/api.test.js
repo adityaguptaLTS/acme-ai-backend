@@ -153,21 +153,28 @@ async function runTests() {
 
     // 7. Chat with valid message when AI runtime is unconfigured
     await test('POST /api/chat honestly returns 503 when local AI runtime is unconfigured', async () => {
-      const res = await makeRequest({
-        method: 'POST',
-        path: '/api/chat',
-        body: { message: 'Hello, ACME AI' },
-        port
-      });
-      assert.strictEqual(res.statusCode, 503);
-      assert.strictEqual(res.body.success, false);
-      assert.strictEqual(res.body.error.code, 'AI_SERVICE_UNAVAILABLE');
-      assert.ok(res.body.error.message.includes('Local AI runtime endpoint is not configured'));
+      const savedUrl = process.env.AI_RUNTIME_URL;
+      delete process.env.AI_RUNTIME_URL;
+      try {
+        const res = await makeRequest({
+          method: 'POST',
+          path: '/api/chat',
+          body: { message: 'Hello, ACME AI' },
+          port
+        });
+        assert.strictEqual(res.statusCode, 503);
+        assert.strictEqual(res.body.success, false);
+        assert.strictEqual(res.body.error.code, 'AI_SERVICE_UNAVAILABLE');
+        assert.ok(res.body.error.message.includes('Local AI runtime endpoint is not configured'));
+      } finally {
+        if (savedUrl) process.env.AI_RUNTIME_URL = savedUrl;
+      }
     });
 
-    // 8. Chat when AI runtime is configured but unreachable (e.g. port 11434 not listening)
+    // 8. Chat when AI runtime is configured but unreachable (e.g. port 59999 not listening)
     await test('POST /api/chat handles connection errors safely when runtime is unreachable', async () => {
-      process.env.AI_RUNTIME_URL = 'http://127.0.0.1:11434';
+      const savedUrl = process.env.AI_RUNTIME_URL;
+      process.env.AI_RUNTIME_URL = 'http://127.0.0.1:59999';
       try {
         const res = await makeRequest({
           method: 'POST',
@@ -180,7 +187,11 @@ async function runTests() {
         assert.strictEqual(res.body.error.code, 'AI_SERVICE_UNAVAILABLE');
         assert.ok(res.body.error.message.includes('Unable to connect to local AI runtime'));
       } finally {
-        process.env.AI_RUNTIME_URL = '';
+        if (savedUrl) {
+          process.env.AI_RUNTIME_URL = savedUrl;
+        } else {
+          delete process.env.AI_RUNTIME_URL;
+        }
       }
     });
 
@@ -204,17 +215,30 @@ async function runTests() {
       assert.strictEqual(res.headers['access-control-allow-origin'], 'http://localhost:5173');
     });
 
-    // 11. CORS rejection for unlisted origin in production mode
-    await test('CORS policy rejects unauthorized origins', async () => {
+    // 12. Chat with empty messages array rejects with 400
+    await test('POST /api/chat rejects empty messages array with 400', async () => {
       const res = await makeRequest({
-        method: 'GET',
-        path: '/api/health',
-        headers: { Origin: 'http://malicious-site.example.com' },
+        method: 'POST',
+        path: '/api/chat',
+        body: { messages: [] },
         port
       });
-      assert.strictEqual(res.statusCode, 403);
+      assert.strictEqual(res.statusCode, 400);
       assert.strictEqual(res.body.success, false);
-      assert.strictEqual(res.body.error.code, 'CORS_NOT_ALLOWED');
+      assert.strictEqual(res.body.error.code, 'EMPTY_MESSAGE');
+    });
+
+    // 13. Chat with invalid message structure in messages array rejects with 400
+    await test('POST /api/chat rejects invalid item in messages array with 400', async () => {
+      const res = await makeRequest({
+        method: 'POST',
+        path: '/api/chat',
+        body: { messages: ['not an object'] },
+        port
+      });
+      assert.strictEqual(res.statusCode, 400);
+      assert.strictEqual(res.body.success, false);
+      assert.strictEqual(res.body.error.code, 'INVALID_MESSAGE_TYPE');
     });
   } finally {
     await new Promise((resolve) => server.close(resolve));

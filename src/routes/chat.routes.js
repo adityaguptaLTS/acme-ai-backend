@@ -11,19 +11,63 @@ function validateChatRequest(req, res, next) {
       success: false,
       error: {
         code: 'INVALID_REQUEST',
-        message: "Request body must be a JSON object containing a 'message' property."
+        message: "Request body must be a JSON object containing a 'message' or 'messages' property."
       }
     });
   }
 
-  const { message } = req.body;
+  const { message, messages } = req.body;
 
+  // Handle messages array if provided
+  if (Array.isArray(messages)) {
+    if (messages.length === 0) {
+      return res.status(400).json({
+        success: false,
+        error: {
+          code: 'EMPTY_MESSAGE',
+          message: "The 'messages' array cannot be empty."
+        }
+      });
+    }
+
+    const sanitizedMessages = [];
+    for (const item of messages) {
+      if (!item || typeof item !== 'object') {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'INVALID_MESSAGE_TYPE',
+            message: "Each message in 'messages' must be an object with role and content."
+          }
+        });
+      }
+      const role = item.role === 'assistant' ? 'assistant' : (item.role === 'system' ? 'system' : 'user');
+      const content = typeof item.content === 'string' ? item.content.trim() : '';
+      if (!content && role === 'user' && item === messages[messages.length - 1]) {
+        return res.status(400).json({
+          success: false,
+          error: {
+            code: 'EMPTY_MESSAGE',
+            message: "The last user message content cannot be empty."
+          }
+        });
+      }
+      sanitizedMessages.push({ role, content });
+    }
+
+    req.validatedPayload = sanitizedMessages;
+    const lastMsg = sanitizedMessages[sanitizedMessages.length - 1];
+    req.validatedMessage = (lastMsg && lastMsg.content) ? lastMsg.content : '';
+    return next();
+  }
+
+  // Fallback to single 'message' field
   if (message === undefined || message === null) {
     return res.status(400).json({
       success: false,
       error: {
         code: 'MISSING_MESSAGE',
-        message: "The 'message' field is required."
+        message: "The 'message' or 'messages' field is required."
       }
     });
   }
@@ -62,16 +106,17 @@ function validateChatRequest(req, res, next) {
 
   // Attach trimmed message to request for downstream handling
   req.validatedMessage = trimmed;
+  req.validatedPayload = trimmed;
   next();
 }
 
 /**
  * POST /api/chat
- * Accepts user message, forwards to local AI runtime, returns response
+ * Accepts user message / conversation history, forwards to local AI runtime, returns response
  */
 router.post('/', validateChatRequest, async (req, res, next) => {
   try {
-    const result = await aiService.generateChatReply(req.validatedMessage);
+    const result = await aiService.generateChatReply(req.validatedPayload);
 
     return res.status(200).json({
       success: true,

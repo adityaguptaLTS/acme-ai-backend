@@ -51,11 +51,56 @@ class AIService {
   }
 
   /**
-   * Sends user message to the local AI inference engine
-   * @param {string} message - Validated non-empty user prompt
+   * Estimates token count of a text string (roughly ~4 chars per token)
+   * @param {string} text
+   * @returns {number}
+   */
+  estimateTokens(text) {
+    if (!text || typeof text !== 'string') return 0;
+    return Math.ceil(text.length / 4);
+  }
+
+  /**
+   * Prunes an array of messages to stay safely within the model context limit (4096 tokens).
+   * Reserves headroom for the new response (e.g. 1024 tokens) and keeps the most recent context.
+   * @param {Array<{role: string, content: string}>} messages
+   * @param {number} maxContextTokens - Context budget (default: 4096)
+   * @param {number} maxResponseBudget - Reserved tokens for completion (default: 1024)
+   * @returns {Array<{role: string, content: string}>}
+   */
+  pruneMessagesForContext(messages, maxContextTokens = 4096, maxResponseBudget = 1024) {
+    if (!Array.isArray(messages) || messages.length === 0) return [];
+
+    const availableBudget = maxContextTokens - maxResponseBudget;
+    const selected = [];
+    let currentTokens = 0;
+
+    // Traverse from newest message to oldest to retain latest conversation turns
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const msg = messages[i];
+      if (!msg || typeof msg.content !== 'string') continue;
+
+      const msgTokens = this.estimateTokens(msg.content) + 4; // overhead per message
+      if (selected.length > 0 && currentTokens + msgTokens > availableBudget) {
+        break; // Stop including older messages once budget is reached
+      }
+
+      selected.unshift({
+        role: msg.role === 'assistant' ? 'assistant' : (msg.role === 'system' ? 'system' : 'user'),
+        content: msg.content
+      });
+      currentTokens += msgTokens;
+    }
+
+    return selected;
+  }
+
+  /**
+   * Sends user message / conversation history to the local AI inference engine
+   * @param {string|Array<{role: string, content: string}>} messageOrMessages - Validated prompt or messages array
    * @returns {Promise<{reply: string, model: string}>}
    */
-  async generateChatReply(message) {
+  async generateChatReply(messageOrMessages) {
     this.refreshConfig();
 
     // 1. Honesty & Safety Check:
@@ -84,19 +129,36 @@ class AIService {
       );
     }
 
+    // Normalize messages array
+    let normalizedMessages = [];
+    if (Array.isArray(messageOrMessages)) {
+      normalizedMessages = this.pruneMessagesForContext(messageOrMessages);
+    } else if (typeof messageOrMessages === 'string') {
+      normalizedMessages = [{ role: 'user', content: messageOrMessages }];
+    }
+
     // 3. Make HTTP request with timeout handling (Node 16+ compatible without external dependencies)
     return new Promise((resolve, reject) => {
       const client = parsedUrl.protocol === 'https:' ? https : http;
-      const requestPayload = JSON.stringify({
-        model: this.modelName,
-        prompt: message,
-        stream: false
-      });
+      const isChatEndpoint = parsedUrl.pathname.endsWith('/chat');
+      const payloadObj = isChatEndpoint
+        ? {
+            model: this.modelName,
+            messages: normalizedMessages,
+            stream: false
+          }
+        : {
+            model: this.modelName,
+            prompt: normalizedMessages.map(m => `${m.role}: ${m.content}`).join('\n') + '\nassistant:',
+            stream: false
+          };
+
+      const requestPayload = JSON.stringify(payloadObj);
 
       const options = {
         hostname: parsedUrl.hostname,
         port: parsedUrl.port || (parsedUrl.protocol === 'https:' ? 443 : 80),
-        path: parsedUrl.pathname === '/' ? '/api/generate' : parsedUrl.pathname,
+        path: parsedUrl.pathname === '/' ? '/api/chat' : parsedUrl.pathname,
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -126,8 +188,9 @@ class AIService {
 
           try {
             const parsedData = JSON.parse(rawData);
-            // Support common response structures: reply, response, or OpenAI choices format
+            // Support common response structures: Ollama chat message.content, reply, response, or OpenAI choices format
             const reply =
+              (parsedData.message && parsedData.message.content) ||
               parsedData.reply ||
               parsedData.response ||
               (parsedData.choices && parsedData.choices[0] && parsedData.choices[0].message && parsedData.choices[0].message.content) ||
